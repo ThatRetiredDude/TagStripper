@@ -1,0 +1,25 @@
+# Local OS/editor files
+.DS_Store
+._*
+.vscode/
+.idea/
+
+# Runtime quarantine/output folders
+junk/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Keep accidental media drops out of the repo
+*.mkv
+*.mp4
+*.avi
+*.mov
+*.m4v
+*.wmv
+*.srt
+*.ass
+*.ssa
+*.sub
