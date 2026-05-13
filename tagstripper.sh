@@ -31,6 +31,7 @@ fi
 
 MEDIA_ROOT="$(cd "$MEDIA_ROOT" && pwd)"
 JUNK_DIR="$MEDIA_ROOT/junk"
+TAGSTRIPPER_DIR="$MEDIA_ROOT/TagStripper"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 
 # ==============================
@@ -129,6 +130,12 @@ is_in_junk() {
     local path="$1"
 
     [[ "$path" == "$JUNK_DIR" || "$path" == "$JUNK_DIR"/* ]]
+}
+
+is_in_tagstripper() {
+    local path="$1"
+
+    [[ "$path" == "$TAGSTRIPPER_DIR" || "$path" == "$TAGSTRIPPER_DIR"/* ]]
 }
 
 is_legitimate_nested_subfolder() {
@@ -245,6 +252,7 @@ queue_quarantine() {
     local dst
 
     is_in_junk "$src" && return
+    is_in_tagstripper "$src" && return
     is_under_queued_quarantine_dir "$src" && return
 
     if [[ -d "$src" ]]; then
@@ -263,6 +271,7 @@ queue_rename() {
     local unique_dst
 
     is_in_junk "$src" && return
+    is_in_tagstripper "$src" && return
     is_under_queued_quarantine_dir "$src" && return
 
     unique_dst="$(unique_destination "$dst" "duplicate")"
@@ -518,7 +527,8 @@ build_mac_hidden_files_queue() {
         find "$MEDIA_ROOT" \
             -type f \
             -name "._*" \
-            ! -path "*/junk/*"
+            ! -path "$JUNK_DIR/*" \
+            ! -path "$TAGSTRIPPER_DIR/*"
     )
 
     for file in "${MAC_FILES[@]}"; do
@@ -549,7 +559,8 @@ build_sample_videos_queue() {
             -iname "proof.avi" -o \
             -iname "rarbg.mp4" -o \
             -iname "rarbg.mkv" \
-        \) ! -path "*/junk/*"
+        \) ! -path "$JUNK_DIR/*" \
+            ! -path "$TAGSTRIPPER_DIR/*"
     )
 
     for file in "${SAMPLES[@]}"; do
@@ -577,7 +588,9 @@ build_junk_folders_queue() {
             -iname "Proof" -o \
             -iname "Sample" -o \
             -iname "Other" \
-        \) ! -path "*/junk/*"
+        \) ! -path "$JUNK_DIR/*" \
+            ! -path "$TAGSTRIPPER_DIR" \
+            ! -path "$TAGSTRIPPER_DIR/*"
     )
 
     for folder in "${FOLDERS[@]}"; do
@@ -600,7 +613,8 @@ build_junk_queue() {
 
     mapfile -t FILES < <(
         find "$MEDIA_ROOT" -type f \
-            ! -path "*/junk/*" \
+            ! -path "$JUNK_DIR/*" \
+            ! -path "$TAGSTRIPPER_DIR/*" \
             ! -iname "movie.nfo" \
             ! -iname "season.nfo" \
             ! -iname "tvshow.nfo"
@@ -628,7 +642,9 @@ build_rename_items_queue() {
 
     mapfile -t ITEMS < <(
         find "$MEDIA_ROOT" \( -type f -o -type d \) \
-            ! -path "*/junk/*" \
+            ! -path "$JUNK_DIR/*" \
+            ! -path "$TAGSTRIPPER_DIR" \
+            ! -path "$TAGSTRIPPER_DIR/*" \
             ! -name "._*" \
             ! -iname "*.txt" \
             ! -iname "*.jpg" \
@@ -724,6 +740,8 @@ build_nested_movie_folders_candidates() {
         find "$MEDIA_ROOT" -mindepth 2 -type d \
             ! -path "$JUNK_DIR" \
             ! -path "$JUNK_DIR/*" \
+            ! -path "$TAGSTRIPPER_DIR" \
+            ! -path "$TAGSTRIPPER_DIR/*" \
             | sort
     )
 }

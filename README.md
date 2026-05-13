@@ -6,6 +6,17 @@ It is filesystem-first: no Sonarr, Radarr, qBittorrent, Plex, or other API integ
 
 ## Quick Start
 
+Keep the `TagStripper` project folder inside the media root you want to clean, alongside folders such as `Movies`, `Shows`, and `Music`:
+
+```text
+Media/
+  Movies/
+  Shows/
+  Music/
+  TagStripper/
+    tagstripper.sh
+```
+
 ```bash
 git clone https://github.com/ThatRetiredDude/TagStripper.git
 cd TagStripper
