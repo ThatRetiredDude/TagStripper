@@ -15,19 +15,20 @@ Media/
   Music/
   TagStripper/
     tagstripper.sh
+    filetype-blacklist.txt
 ```
 
 ```bash
 git clone https://github.com/ThatRetiredDude/TagStripper.git
 cd TagStripper
 chmod +x tagstripper.sh
-./tagstripper.sh /path/to/your/media/root
+bash ./tagstripper.sh /path/to/your/media/root
 ```
 
 If no media root is provided, TagStripper uses the current directory:
 
 ```bash
-./tagstripper.sh
+bash ./tagstripper.sh
 ```
 
 ## Safety Model
@@ -49,7 +50,9 @@ TagStripper currently supports:
 - Clean Mac hidden files such as `._*`.
 - Clean sample/proof videos.
 - Clean junk folders such as `Screens`, `Screenshots`, `Proof`, `Sample`, and `Other`.
-- Clean strict junk sidecar files such as tracker text files and download breadcrumbs.
+- Clean junk files using a vendored extension blacklist ([ojwc/filetype-blacklist](https://github.com/ojwc/filetype-blacklist)), minus core media/playback types (video, audio, subtitles, artwork, and selected Blu-ray metadata such as `.mpls` / `.clpi`).
+- Remove imported `.nfo` files along with other document/config/script/archive sidecars (your *arr apps can regenerate metadata).
+- Apply best-effort hardening on `junk/` after confirmed moves (`chmod 700`, warning readme, strip execute bits, optional Spotlight and Linux markers; optional macOS quarantine xattrs).
 - Rename files and folders by removing common tracker/indexer release tags.
 - Detect movie folders nested inside other movie folders and selectively move them up one branch.
 - Run a combined full cleanup preview for the lower-risk cleanup and rename actions.
@@ -66,9 +69,9 @@ TagStripper is a hybrid of four systems:
    - Normalizes filenames and folder names.
 
 2. A torrent artifact cleaner, similar in spirit to Cleanuperr.
-   - Detects `.txt`, sample, proof, and tracker junk files.
-   - Quarantines strict junk instead of deleting it.
-   - Avoids broad guesses that could remove useful metadata.
+   - Detects tracker/sample junk plus extension blacklist entries loaded from `filetype-blacklist.txt`.
+   - Quarantines junk instead of deleting it.
+   - Treats imported docs, scripts, archives, configs, and `.nfo` sidecars as removable junk while preserving core media/playback files.
 
 3. A filesystem janitor.
    - Routes junk into a reviewable `junk/` folder.
@@ -114,12 +117,18 @@ That combination is rare.
 
 ## Requirements
 
-- Bash
+- Bash 4+ (`mapfile`, associative arrays)
 - `find`
 - `sort`
 - `awk`
 - `perl`
 - Standard Unix utilities available on macOS and most Linux systems
+
+Optional hardening uses `xattr` / `setfattr` / `wslpath` + Windows `attrib.exe` when available.
+
+macOS note: the system `/bin/bash` is often Bash 3.2. Install a newer Bash and run TagStripper with that shell if you see a Bash version error.
+
+Do not run cleanup against active downloader working directories. If partial download files such as `.part`, `.partial`, `.crdownload`, or `.!qB` are queued, TagStripper shows an extra confirmation prompt.
 
 ## License
 

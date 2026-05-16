@@ -22,6 +22,12 @@
 
 set -euo pipefail
 
+if ((BASH_VERSINFO[0] < 4)); then
+    echo "Error: TagStripper requires Bash 4 or newer." >&2
+    echo "On macOS, install a newer Bash (for example with Homebrew) and run this script with it." >&2
+    exit 1
+fi
+
 MEDIA_ROOT="${1:-$PWD}"
 
 if [ ! -d "$MEDIA_ROOT" ]; then
@@ -33,6 +39,12 @@ MEDIA_ROOT="$(cd "$MEDIA_ROOT" && pwd)"
 JUNK_DIR="$MEDIA_ROOT/junk"
 TAGSTRIPPER_DIR="$MEDIA_ROOT/TagStripper"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BLACKLIST_FILE="${BLACKLIST_FILE:-$SCRIPT_DIR/filetype-blacklist.txt}"
+
+declare -a JUNK_SUFFIX_BLACKLIST=()
+JUNK_PREPARED=0
 
 # ==============================
 # GLOBAL OPERATION QUEUES
@@ -92,7 +104,7 @@ is_rename_candidate_type() {
 
     lower="$(printf '%s\n' "$item" | tr '[:upper:]' '[:lower:]')"
     case "$lower" in
-        *.mkv|*.mp4|*.avi|*.mov|*.m4v|*.wmv|*.srt|*.ass|*.ssa|*.sub)
+        *.mkv|*.mp4|*.avi|*.mov|*.m4v|*.wmv|*.webm|*.srt|*.ass|*.ssa|*.sub)
             return 0
             ;;
     esac
@@ -124,6 +136,233 @@ is_strict_junk_sidecar() {
     esac
 
     return 1
+}
+
+# True if blacklist suffix should be ignored because it matches library media/playback files.
+media_suffix_allowed() {
+    local bl="$1"
+    local ext
+    local suf
+    local blen
+    local slen
+
+    local -a ordered=(
+        movpkg thumb avchd m2ts jpeg webm flac mpls bdmv bdjo clpi
+        mkv mp4 avi mov m4v wmv flv ts vob cue
+        mp3 m4a wav wma aif mpa mid aac opus
+        srt ass ssa sub idx m3u
+        jpg png gif bmp tif tiff svg thm
+    )
+
+    for ext in "${ordered[@]}"; do
+        suf=".$ext"
+        slen=${#suf}
+        blen=${#bl}
+        ((blen >= slen)) || continue
+        [[ "${bl:blen - slen}" == "$suf" ]] && return 0
+    done
+
+    return 1
+}
+
+load_junk_suffix_blacklist() {
+    local line
+    local suffix
+    declare -A seen=()
+    declare -a raw=()
+
+    if [[ -f "$BLACKLIST_FILE" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+
+            [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
+            [[ "$line" != *\** ]] && continue
+
+            if [[ "$line" =~ ^\*\.(.+)$ ]]; then
+                suffix=".${BASH_REMATCH[1]}"
+            else
+                continue
+            fi
+
+            suffix="$(printf '%s\n' "$suffix" | tr '[:upper:]' '[:lower:]')"
+            [[ "$suffix" == *" "* || "$suffix" == *'"'* ]] && continue
+
+            raw+=("$suffix")
+        done <"$BLACKLIST_FILE"
+    else
+        printf '%s\n' "Warning: blacklist file not found: $BLACKLIST_FILE" >&2
+    fi
+
+    local -a extras=(
+        .nfo .txt .xml .json .pdf .log .md .readme .html .htm .csv
+        .doc .docx .docm .dot .dotm .xls .xlsx .xlsm .xlsb .xlt .xltm .ppt .pptx .pptm .pps .ppsm .odt .rtf .epub .mobi
+        .db .ini .conf .config
+        .exe .msi .dmg .pkg .app .bat .cmd .ps1 .psm1 .vbs .vbe .vb .js .jse .jsx .jar .apk .com .scr .wsf .hta
+        .py .pyc .pyo .pyz .python .sh .bash .zsh .csh .ksh .rb .ruby .pl .perl .php .java .c .cs .coffee .applescript .scpt .command
+        .zip .rar .7z .tar .gz .iso .img
+        .lnk .desktop .webloc .website .torrent
+    )
+
+    for suffix in "${extras[@]}"; do
+        raw+=("$suffix")
+    done
+
+    for suffix in "${raw[@]}"; do
+        media_suffix_allowed "$suffix" && continue
+        [[ -n "${seen[$suffix]:-}" ]] && continue
+        seen[$suffix]=1
+    done
+
+    mapfile -t JUNK_SUFFIX_BLACKLIST < <(
+        for suffix in "${!seen[@]}"; do
+            printf '%s\n' "$suffix"
+        done | awk '{ print length($0) "\t" $0 }' | sort -t "$(printf '\t')" -nr -k1,1 | cut -f2-
+    )
+}
+
+is_hidden_system_junk() {
+    local path="$1"
+    local base
+    local lower
+
+    base="$(basename "$path")"
+    lower="$(printf '%s\n' "$base" | tr '[:upper:]' '[:lower:]')"
+
+    case "$lower" in
+        .ds_store|.directory|.apdisk|.nomedia|desktop.ini|thumbs.db|ehthumbs.db|ehthumbs_vista.db)
+            return 0
+            ;;
+    esac
+
+    [[ "$base" == ._* ]] && return 0
+
+    case "$lower" in
+        __macosx|.spotlight-v100|.trashes|.fseventsd|.temporaryitems|.appledouble|@eadir)
+            return 0
+            ;;
+    esac
+
+    [[ "$lower" == '$recycle.bin' ]] && return 0
+    [[ "$lower" == "system volume information" ]] && return 0
+
+    [[ "$lower" == .trash-* ]] && return 0
+
+    [[ "$lower" == .smbdelete* ]] && return 0
+
+    [[ "$lower" == .~lock.* ]] && return 0
+
+    case "$lower" in
+        *.swp|*.swo|*.part|*.partial|*.crdownload|*.!qb)
+            return 0
+            ;;
+    esac
+
+    [[ "$lower" == *~ ]] && return 0
+
+    return 1
+}
+
+is_partial_download_leftover() {
+    local path="$1"
+    local base
+    local lower
+
+    base="$(basename "$path")"
+    lower="$(printf '%s\n' "$base" | tr '[:upper:]' '[:lower:]')"
+
+    case "$lower" in
+        *.part|*.partial|*.crdownload|*.!qb)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+is_extension_blacklisted() {
+    local base="$1"
+    local lower="$2"
+    local bl
+    local blen
+    local olen
+
+    [[ -z "$lower" ]] && lower="$(printf '%s\n' "$base" | tr '[:upper:]' '[:lower:]')"
+
+    for bl in "${JUNK_SUFFIX_BLACKLIST[@]}"; do
+        olen=${#bl}
+        blen=${#lower}
+        ((blen >= olen)) || continue
+        [[ "${lower:blen - olen}" == "$bl" ]] || continue
+        return 0
+    done
+
+    return 1
+}
+
+prepare_junk_quarantine_environment() {
+    [[ "$JUNK_PREPARED" == 1 ]] && return 0
+
+    mkdir -p "$JUNK_DIR" || return 0
+    chmod 700 "$JUNK_DIR" 2>/dev/null || true
+
+    local readme="$JUNK_DIR/README_DO_NOT_OPEN_FILES.txt"
+
+    if [[ ! -f "$readme" ]]; then
+        cat >"$readme" <<'EOF'
+Quarantined junk — may contain malware or unwanted downloads.
+Do not open files here. Prefer deleting this folder after verifying your library.
+EOF
+    fi
+
+    touch "$JUNK_DIR/.nomedia" 2>/dev/null || true
+
+    if [[ "$(uname -s)" == Darwin ]]; then
+        touch "$JUNK_DIR/.metadata_never_index" 2>/dev/null || true
+    fi
+
+    JUNK_PREPARED=1
+}
+
+harden_quarantined_item() {
+    local dst="$1"
+
+    [[ -e "$dst" ]] || return 0
+
+    if [[ -f "$dst" ]]; then
+        chmod a-x "$dst" 2>/dev/null || true
+    elif [[ -d "$dst" ]]; then
+        find "$dst" -type f -exec chmod a-x {} + 2>/dev/null || true
+    fi
+
+    local os
+    os="$(uname -s)"
+
+    if [[ "$os" == Darwin ]] && command -v xattr >/dev/null; then
+        if [[ -f "$dst" ]]; then
+            xattr -w com.apple.quarantine "0083;$(date +%s);TagStripper;" "$dst" 2>/dev/null || true
+        elif [[ -d "$dst" ]]; then
+            find "$dst" -type f -exec xattr -w com.apple.quarantine "0083;$(date +%s);TagStripper;" {} \; 2>/dev/null || true
+        fi
+    fi
+
+    if [[ "$os" == Linux ]] && command -v setfattr >/dev/null; then
+        if [[ -f "$dst" ]]; then
+            setfattr -n user.tagstripper.quarantine -v true "$dst" 2>/dev/null || true
+        elif [[ -d "$dst" ]]; then
+            find "$dst" -type f -exec setfattr -n user.tagstripper.quarantine -v true {} \; 2>/dev/null || true
+        fi
+    fi
+
+    if [[ "$(uname -r)" == *[Mm]icrosoft* ]] && command -v wslpath >/dev/null && [[ "$dst" == /mnt/* ]]; then
+        local winpath
+
+        winpath="$(wslpath -w "$dst" 2>/dev/null)" || winpath=""
+
+        if [[ -n "$winpath" ]] && [[ -x "/mnt/c/Windows/System32/attrib.exe" ]]; then
+            /mnt/c/Windows/System32/attrib.exe +H "$winpath" 2>/dev/null || true
+        fi
+    fi
 }
 
 is_in_junk() {
@@ -354,6 +593,18 @@ clear_queues() {
     RENAME_DST_QUEUE=()
 }
 
+quarantine_queue_contains_partial_download() {
+    local src
+
+    for src in "${QUARANTINE_SRC_QUEUE[@]}"; do
+        if [[ -f "$src" ]] && is_partial_download_leftover "$src"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # ==============================
 # PREVIEW SYSTEM
 # ==============================
@@ -461,6 +712,25 @@ confirm_and_execute() {
         return
     fi
 
+    if quarantine_queue_contains_partial_download; then
+        echo ""
+        echo "WARNING: Partial download files are queued for quarantine."
+        echo "Only continue if this is a completed/imported library, not an active downloader working directory."
+        read -rp "Continue with partial-download quarantine? (y/N): " partial_confirm
+
+        if [[ "$partial_confirm" != "y" && "$partial_confirm" != "Y" ]]; then
+            echo ""
+            echo "Aborted."
+            clear_queues
+            return
+        fi
+    fi
+
+    if [ ${#QUARANTINE_SRC_QUEUE[@]} -gt 0 ]; then
+        JUNK_PREPARED=0
+        prepare_junk_quarantine_environment
+    fi
+
     echo ""
     echo "Executing..."
     echo ""
@@ -482,6 +752,8 @@ confirm_and_execute() {
         echo "  -> $dst"
 
         mv "$src" "$dst"
+
+        harden_quarantined_item "$dst"
     done
 
     # RENAMES
@@ -610,19 +882,42 @@ clean_junk() {
 }
 
 build_junk_queue() {
+    local path
+    local base
+    local lower
 
-    mapfile -t FILES < <(
-        find "$MEDIA_ROOT" -type f \
+    mapfile -t JUNK_PATHS < <(
+        find "$MEDIA_ROOT" \( -type f -o -type d \) \
+            ! -path "$JUNK_DIR" \
             ! -path "$JUNK_DIR/*" \
-            ! -path "$TAGSTRIPPER_DIR/*" \
-            ! -iname "movie.nfo" \
-            ! -iname "season.nfo" \
-            ! -iname "tvshow.nfo"
+            ! -path "$TAGSTRIPPER_DIR" \
+            ! -path "$TAGSTRIPPER_DIR/*"
     )
 
-    for file in "${FILES[@]}"; do
-        if is_strict_junk_sidecar "$file"; then
-            queue_quarantine "$file"
+    for path in "${JUNK_PATHS[@]}"; do
+        base="$(basename "$path")"
+        lower="$(printf '%s\n' "$base" | tr '[:upper:]' '[:lower:]')"
+
+        if [[ -f "$path" ]]; then
+            if is_strict_junk_sidecar "$path"; then
+                queue_quarantine "$path"
+                continue
+            fi
+
+            if is_hidden_system_junk "$path"; then
+                queue_quarantine "$path"
+                continue
+            fi
+
+            if is_extension_blacklisted "$base" "$lower"; then
+                queue_quarantine "$path"
+            fi
+
+            continue
+        fi
+
+        if [[ -d "$path" ]] && is_hidden_system_junk "$path"; then
+            queue_quarantine "$path"
         fi
     done
 }
@@ -866,6 +1161,8 @@ show_menu() {
     echo "8. Exit"
     echo ""
 }
+
+load_junk_suffix_blacklist
 
 while true; do
 
